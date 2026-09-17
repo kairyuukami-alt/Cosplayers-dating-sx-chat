@@ -37,6 +37,14 @@ insert into public.support_threads(user_id)
 select id from public.profiles
 on conflict (user_id) do nothing;
 
+create or replace function public.is_current_user_admin()
+returns boolean
+language sql stable set search_path = '' as $$
+  select coalesce((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin', false);
+$$;
+revoke all on function public.is_current_user_admin() from public,anon;
+grant execute on function public.is_current_user_admin() to authenticated;
+
 alter table public.support_threads enable row level security;
 alter table public.support_messages enable row level security;
 
@@ -57,14 +65,6 @@ using (
       and (t.user_id = (select auth.uid()) or public.is_current_user_admin())
   )
 );
-
-create or replace function public.is_current_user_admin()
-returns boolean
-language sql stable set search_path = '' as $$
-  select coalesce((auth.jwt() -> 'app_metadata' ->> 'role') = 'admin', false);
-$$;
-revoke all on function public.is_current_user_admin() from public,anon;
-grant execute on function public.is_current_user_admin() to authenticated;
 
 create or replace function public.consume_view_once_media(target_message uuid)
 returns table (media_path text, message_type text)
