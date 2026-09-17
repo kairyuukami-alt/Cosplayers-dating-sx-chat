@@ -1,6 +1,6 @@
 'use client'
 
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -11,6 +11,27 @@ async function hydrateMessage(message: ChatMessage) {
   const supabase = createClient()
   const { data } = await supabase.storage.from('chat-media').createSignedUrl(message.media_path, 3600)
   return { ...message, media_url: data?.signedUrl ?? null }
+}
+
+async function fetchChatData(matchId: string) {
+  const supabase = createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { destination: '/login' as const, me: null, context: null, messages: [] as ChatMessage[] }
+
+  const { data: contextData, error: contextError } = await supabase.rpc('get_match_context', { target_match: matchId })
+  if (contextError) throw contextError
+  if (!contextData?.length) return { destination: '/matches' as const, me: user.id, context: null, messages: [] as ChatMessage[] }
+
+  const rawContext = contextData[0] as MatchContext
+  if (rawContext.avatar_path) {
+    const { data: signed } = await supabase.storage.from('profile-media').createSignedUrl(rawContext.avatar_path, 3600)
+    rawContext.avatar_url = signed?.signedUrl ?? null
+  }
+
+  const { data: messageData, error: messageError } = await supabase.from('messages').select('*').eq('match_id', matchId).order('created_at', { ascending: true })
+  if (messageError) throw messageError
+  const messages = await Promise.all(((messageData ?? []) as ChatMessage[]).map(hydrateMessage))
+  return { destination: null, me: user.id, context: rawContext, messages }
 }
 
 export default function ChatPage() {
@@ -25,31 +46,25 @@ export default function ChatPage() {
   const [uploading, setUploading] = useState(false)
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
-  const load = useCallback(async () => {
-    const supabase = createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return router.replace('/login')
-    setMe(user.id)
-
-    const { data: contextData, error: contextError } = await supabase.rpc('get_match_context', { target_match: matchId })
-    if (contextError || !contextData?.length) {
-      setStatus(contextError?.message || 'This match is unavailable.')
-      return
-    }
-    const rawContext = contextData[0] as MatchContext
-    if (rawContext.avatar_path) {
-      const { data: signed } = await supabase.storage.from('profile-media').createSignedUrl(rawContext.avatar_path, 3600)
-      rawContext.avatar_url = signed?.signedUrl ?? null
-    }
-    setContext(rawContext)
-
-    const { data: messageData, error: messageError } = await supabase.from('messages').select('*').eq('match_id', matchId).order('created_at', { ascending: true })
-    if (messageError) return setStatus(messageError.message)
-    const hydrated = await Promise.all(((messageData ?? []) as ChatMessage[]).map(hydrateMessage))
-    setMessages(hydrated)
+  useEffect(() => {
+    let cancelled = false
+    fetchChatData(matchId)
+      .then(result => {
+        if (cancelled) return
+        if (result.destination) {
+          router.replace(result.destination)
+          return
+        }
+        setMe(result.me)
+        setContext(result.context)
+        setMessages(result.messages)
+      })
+      .catch(error => {
+        if (cancelled) return
+        setStatus(error instanceof Error ? error.message : 'Could not load this conversation.')
+      })
+    return () => { cancelled = true }
   }, [matchId, router])
-
-  useEffect(() => { void load() }, [load])
 
   useEffect(() => {
     const supabase = createClient()
