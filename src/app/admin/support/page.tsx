@@ -5,6 +5,18 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import type { AdminDirectoryUser, SupportMessage } from '@/lib/types'
 
+async function fetchDirectory(term = '') {
+  const { data, error } = await createClient().rpc('admin_directory', { search_term: term || null })
+  if (error) throw error
+  return (data ?? []) as AdminDirectoryUser[]
+}
+
+async function fetchSupportMessages(threadId: string) {
+  const { data, error } = await createClient().from('support_messages').select('*').eq('thread_id', threadId).order('created_at', { ascending: true })
+  if (error) throw error
+  return (data ?? []) as SupportMessage[]
+}
+
 export default function AdminSupportPage() {
   const [users, setUsers] = useState<AdminDirectoryUser[]>([])
   const [selected, setSelected] = useState<AdminDirectoryUser | null>(null)
@@ -13,27 +25,42 @@ export default function AdminSupportPage() {
   const [text, setText] = useState('')
   const [status, setStatus] = useState('Checking admin access…')
 
-  async function search(term = '') {
-    const { data, error } = await createClient().rpc('admin_directory', { search_term: term || null })
-    if (error) {
-      setUsers([])
-      setStatus(error.message)
-      return
-    }
-    setUsers((data ?? []) as AdminDirectoryUser[])
-    setStatus('')
-  }
+  useEffect(() => {
+    let cancelled = false
+    fetchDirectory()
+      .then(data => {
+        if (cancelled) return
+        setUsers(data)
+        setStatus('')
+      })
+      .catch(error => {
+        if (cancelled) return
+        setUsers([])
+        setStatus(error instanceof Error ? error.message : 'Admin access required')
+      })
+    return () => { cancelled = true }
+  }, [])
 
-  useEffect(() => { void search() }, [])
+  async function search(term = '') {
+    try {
+      setUsers(await fetchDirectory(term))
+      setStatus('')
+    } catch (error) {
+      setUsers([])
+      setStatus(error instanceof Error ? error.message : 'Search failed')
+    }
+  }
 
   async function openUser(user: AdminDirectoryUser) {
     setSelected(user)
     setMessages([])
     setStatus('')
     if (!user.support_thread_id) return
-    const { data, error } = await createClient().from('support_messages').select('*').eq('thread_id', user.support_thread_id).order('created_at', { ascending: true })
-    if (error) return setStatus(error.message)
-    setMessages((data ?? []) as SupportMessage[])
+    try {
+      setMessages(await fetchSupportMessages(user.support_thread_id))
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not load support messages')
+    }
   }
 
   async function submitSearch(event: FormEvent) {
@@ -51,14 +78,11 @@ export default function AdminSupportPage() {
       message_body: body,
     })
     if (error) return setStatus(error.message)
-    const refreshed = { ...selected }
-    if (!refreshed.support_thread_id) {
-      const { data } = await createClient().rpc('admin_directory', { search_term: selected.username })
-      const match = ((data ?? []) as AdminDirectoryUser[]).find(item => item.user_id === selected.user_id)
-      if (match) refreshed.support_thread_id = match.support_thread_id
-    }
+
+    const refreshedList = await fetchDirectory(selected.username)
+    const refreshed = refreshedList.find(item => item.user_id === selected.user_id) ?? selected
     setSelected(refreshed)
-    await openUser(refreshed)
+    if (refreshed.support_thread_id) setMessages(await fetchSupportMessages(refreshed.support_thread_id))
   }
 
   return (
