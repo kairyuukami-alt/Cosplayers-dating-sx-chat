@@ -1,6 +1,6 @@
 'use client'
 
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { Gender } from '@/lib/types'
@@ -20,7 +20,6 @@ export default function OnboardingPage() {
   const [username, setUsername] = useState('')
   const [dob, setDob] = useState('')
   const [gender, setGender] = useState<Gender>('man')
-  const [interestedIn, setInterestedIn] = useState<Gender>('woman')
   const [city, setCity] = useState('')
   const [bio, setBio] = useState('')
   const [characters, setCharacters] = useState('')
@@ -28,10 +27,7 @@ export default function OnboardingPage() {
   const [message, setMessage] = useState('')
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    setInterestedIn(gender === 'man' ? 'woman' : 'man')
-  }, [gender])
-
+  const interestedIn: Gender = gender === 'man' ? 'woman' : 'man'
   const isAdult = useMemo(() => dob ? yearsOld(dob) >= 18 : false, [dob])
 
   async function save(event: FormEvent) {
@@ -77,7 +73,7 @@ export default function OnboardingPage() {
           <label>Username<input required pattern="[A-Za-z0-9_]+" maxLength={24} value={username} onChange={e => setUsername(e.target.value)} placeholder="cosplay_handle" /></label>
           <label>Date of birth<input required type="date" value={dob} onChange={e => setDob(e.target.value)} /></label>
           <label>Gender<select value={gender} onChange={e => setGender(e.target.value as Gender)}><option value="man">Man</option><option value="woman">Woman</option></select></label>
-          <label>Looking for<select value={interestedIn} onChange={e => setInterestedIn(e.target.value as Gender)}><option value="woman">Women</option><option value="man">Men</option></select></label>
+          <label>Looking for<input readOnly value={interestedIn === 'woman' ? 'Women' : 'Men'} /></label>
           <label>City<input maxLength={80} value={city} onChange={e => setCity(e.target.value)} /></label>
           <label className="span-2">Cosplay characters <span>(comma separated)</span><input value={characters} onChange={e => setCharacters(e.target.value)} placeholder="Makima, Gojo, Frieren" /></label>
           <label className="span-2">Fandoms <span>(comma separated)</span><input value={fandoms} onChange={e => setFandoms(e.target.value)} placeholder="Chainsaw Man, JJK, Frieren" /></label>

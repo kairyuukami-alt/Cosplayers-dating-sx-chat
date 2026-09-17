@@ -1,7 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { Nav } from '@/components/nav'
 import { createClient } from '@/lib/supabase/client'
 import type { DiscoverProfile } from '@/lib/types'
@@ -13,34 +14,60 @@ async function withAvatar(profile: DiscoverProfile) {
   return { ...profile, avatar_url: data?.signedUrl ?? null }
 }
 
+async function fetchDiscoverProfiles() {
+  const supabase = createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { destination: '/login' as const, profiles: [] as DiscoverProfile[] }
+
+  const { data: ownProfile } = await supabase.from('profiles').select('id').eq('id', user.id).maybeSingle()
+  if (!ownProfile) return { destination: '/onboarding' as const, profiles: [] as DiscoverProfile[] }
+
+  const { data, error } = await supabase.rpc('discover_profiles', { limit_count: 25 })
+  if (error) throw error
+  const hydrated = await Promise.all(((data ?? []) as DiscoverProfile[]).map(withAvatar))
+  return { destination: null, profiles: hydrated }
+}
+
 export default function DiscoverPage() {
+  const router = useRouter()
   const [profiles, setProfiles] = useState<DiscoverProfile[]>([])
   const [loading, setLoading] = useState(true)
   const [status, setStatus] = useState('')
   const [matched, setMatched] = useState<DiscoverProfile | null>(null)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    const supabase = createClient()
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-    const { data: ownProfile } = await supabase.from('profiles').select('id').eq('id', user.id).maybeSingle()
-    if (!ownProfile) {
-      window.location.href = '/onboarding'
-      return
-    }
-    const { data, error } = await supabase.rpc('discover_profiles', { limit_count: 25 })
-    if (error) {
-      setStatus(error.message)
-      setLoading(false)
-      return
-    }
-    const hydrated = await Promise.all(((data ?? []) as DiscoverProfile[]).map(withAvatar))
-    setProfiles(hydrated)
-    setLoading(false)
-  }, [])
+  useEffect(() => {
+    let cancelled = false
+    fetchDiscoverProfiles()
+      .then(result => {
+        if (cancelled) return
+        if (result.destination) {
+          router.replace(result.destination)
+          return
+        }
+        setProfiles(result.profiles)
+        setLoading(false)
+      })
+      .catch(error => {
+        if (cancelled) return
+        setStatus(error instanceof Error ? error.message : 'Could not load profiles.')
+        setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [router])
 
-  useEffect(() => { void load() }, [load])
+  async function reload() {
+    setLoading(true)
+    setStatus('')
+    try {
+      const result = await fetchDiscoverProfiles()
+      if (result.destination) return router.replace(result.destination)
+      setProfiles(result.profiles)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not load profiles.')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   async function swipe(decision: 'like' | 'pass') {
     const current = profiles[0]
@@ -85,7 +112,7 @@ export default function DiscoverPage() {
             </div>
           </section>
         ) : (
-          <section className="panel discover-empty"><div className="eyebrow">YOU&apos;RE CAUGHT UP</div><h2>No new profiles right now.</h2><p>As new compatible cosplayers join, they will appear here.</p><button className="secondary" onClick={load}>Check again</button></section>
+          <section className="panel discover-empty"><div className="eyebrow">YOU&apos;RE CAUGHT UP</div><h2>No new profiles right now.</h2><p>As new compatible cosplayers join, they will appear here.</p><button className="secondary" onClick={reload}>Check again</button></section>
         )}
       </main>
 
