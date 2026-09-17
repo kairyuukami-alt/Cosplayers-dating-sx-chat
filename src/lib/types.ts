@@ -44,3 +44,23 @@ export type MatchSummary = {
   matched_at: string
   avatar_url?: string | null
 }
+
+export type MatchContext = {
+  match_id: string
+  other_user_id: string
+  username: string
+  display_name: string
+  avatar_path: string | null
+  avatar_url?: string | null
+}
+
+export type ChatMessage = {
+  id: string
+  match_id: string
+  sender_id: string
+  body: string | null
+  message_type: 'text' | 'image' | 'video'
+  media_path: string | null
+  created_at: string
+  media_url?: string | null
+}
