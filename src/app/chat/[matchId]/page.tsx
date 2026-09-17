@@ -6,8 +6,9 @@ import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import type { ChatMessage, MatchContext } from '@/lib/types'
 
-async function hydrateMessage(message: ChatMessage) {
+async function hydrateMessage(message: ChatMessage, me?: string | null) {
   if (!message.media_path) return { ...message, media_url: null }
+  if (message.view_once && message.sender_id !== me) return { ...message, media_url: null }
   const supabase = createClient()
   const { data } = await supabase.storage.from('chat-media').createSignedUrl(message.media_path, 3600)
   return { ...message, media_url: data?.signedUrl ?? null }
@@ -30,7 +31,7 @@ async function fetchChatData(matchId: string) {
 
   const { data: messageData, error: messageError } = await supabase.from('messages').select('*').eq('match_id', matchId).order('created_at', { ascending: true })
   if (messageError) throw messageError
-  const messages = await Promise.all(((messageData ?? []) as ChatMessage[]).map(hydrateMessage))
+  const messages = await Promise.all(((messageData ?? []) as ChatMessage[]).map(message => hydrateMessage(message, user.id)))
   return { destination: null, me: user.id, context: rawContext, messages }
 }
 
@@ -44,6 +45,7 @@ export default function ChatPage() {
   const [text, setText] = useState('')
   const [status, setStatus] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [viewOnce, setViewOnce] = useState(false)
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -70,12 +72,16 @@ export default function ChatPage() {
     const supabase = createClient()
     const channel = supabase.channel(`match:${matchId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `match_id=eq.${matchId}` }, async payload => {
-        const incoming = await hydrateMessage(payload.new as ChatMessage)
+        const incoming = await hydrateMessage(payload.new as ChatMessage, me)
         setMessages(previous => previous.some(item => item.id === incoming.id) ? previous : [...previous, incoming])
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'messages', filter: `match_id=eq.${matchId}` }, payload => {
+        const removed = payload.old as { id?: string }
+        if (removed.id) setMessages(previous => previous.filter(item => item.id !== removed.id))
       })
       .subscribe()
     return () => { void supabase.removeChannel(channel) }
-  }, [matchId])
+  }, [matchId, me])
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages])
 
@@ -112,9 +118,42 @@ export default function ChatPage() {
       sender_id: me,
       message_type: isImage ? 'image' : 'video',
       media_path: path,
+      view_once: viewOnce,
     })
     setUploading(false)
-    if (messageError) setStatus(messageError.message)
+    if (messageError) {
+      await supabase.storage.from('chat-media').remove([path])
+      setStatus(messageError.message)
+      return
+    }
+    setViewOnce(false)
+  }
+
+  async function openViewOnce(message: ChatMessage) {
+    if (!message.media_path || message.sender_id === me || message.viewed_at) return
+    const supabase = createClient()
+    const { data: signed, error: signError } = await supabase.storage.from('chat-media').createSignedUrl(message.media_path, 60)
+    if (signError || !signed?.signedUrl) return setStatus(signError?.message || 'Media is unavailable.')
+
+    const { error: consumeError } = await supabase.rpc('consume_view_once_media', { target_message: message.id })
+    if (consumeError) return setStatus(consumeError.message)
+
+    setMessages(previous => previous.map(item => item.id === message.id ? { ...item, viewed_at: new Date().toISOString(), media_url: signed.signedUrl } : item))
+    window.setTimeout(() => {
+      setMessages(previous => previous.map(item => item.id === message.id ? { ...item, media_url: null } : item))
+    }, 60000)
+  }
+
+  async function deleteMessage(message: ChatMessage) {
+    if (message.sender_id !== me || !window.confirm('Delete this message for both people?')) return
+    const supabase = createClient()
+    if (message.media_path) {
+      const { error: mediaError } = await supabase.storage.from('chat-media').remove([message.media_path])
+      if (mediaError) return setStatus(mediaError.message)
+    }
+    const { error } = await supabase.from('messages').delete().eq('id', message.id)
+    if (error) return setStatus(error.message)
+    setMessages(previous => previous.filter(item => item.id !== message.id))
   }
 
   async function reportUser() {
@@ -153,11 +192,15 @@ export default function ChatPage() {
       <section className="message-list">
         {messages.map(message => {
           const mine = message.sender_id === me
+          const consumed = message.view_once && !!message.viewed_at && !message.media_url
           return <article className={`message ${mine ? 'mine' : ''}`} key={message.id}>
             {message.message_type === 'text' && <p>{message.body}</p>}
-            {message.message_type === 'image' && message.media_url && <img src={message.media_url} alt="Shared in chat" />}
+            {message.message_type !== 'text' && message.view_once && !mine && !message.viewed_at && <button className="view-once-card" onClick={() => openViewOnce(message)}>◎ Open once</button>}
+            {message.message_type !== 'text' && consumed && <p className="view-once-gone">View-once media opened</p>}
+            {message.message_type === 'image' && message.media_url && <img src={message.media_url} alt={message.view_once ? 'View-once media' : 'Shared in chat'} />}
             {message.message_type === 'video' && message.media_url && <video src={message.media_url} controls preload="metadata" />}
-            <time>{new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+            {message.view_once && mine && <small>View once{message.viewed_at ? ' · opened' : ''}</small>}
+            <div className="message-meta"><time>{new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>{mine && <button onClick={() => deleteMessage(message)}>Delete</button>}</div>
           </article>
         })}
         {!messages.length && !status && <div className="chat-empty"><div className="eyebrow">MATCHED</div><h2>Start with the cosplay.</h2><p>Ask about a character, convention, build, photoshoot or shared fandom.</p></div>}
@@ -166,12 +209,13 @@ export default function ChatPage() {
 
       <footer className="composer-wrap">
         {status && <div className="chat-status">{status}<button onClick={() => setStatus('')}>×</button></div>}
+        <div className="media-mode"><label><input type="checkbox" checked={viewOnce} onChange={event => setViewOnce(event.target.checked)} /> Send the next photo/video as view once</label></div>
         <form className="composer" onSubmit={send}>
           <label className="attach-button" title="Send photo or video">＋<input type="file" accept="image/*,video/*" onChange={uploadMedia} disabled={uploading} /></label>
           <input aria-label="Message" placeholder={uploading ? 'Uploading media…' : 'Message your match…'} value={text} onChange={event => setText(event.target.value)} maxLength={2000} disabled={!context || uploading} />
           <button className="send-button" disabled={!text.trim() || !context}>Send</button>
         </form>
-        <p className="chat-note">Only share media you have permission to send. You can block or report from the header at any time.</p>
+        <p className="chat-note">Only share media you have permission to send. View-once links expire quickly and cannot be reopened normally after viewing.</p>
       </footer>
     </main>
   )
