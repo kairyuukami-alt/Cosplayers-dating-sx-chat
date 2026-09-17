@@ -61,6 +61,25 @@ export type ChatMessage = {
   body: string | null
   message_type: 'text' | 'image' | 'video'
   media_path: string | null
+  view_once: boolean
+  viewed_at: string | null
   created_at: string
   media_url?: string | null
+}
+
+export type SupportMessage = {
+  id: string
+  thread_id: string
+  sender_id: string
+  sender_role: 'user' | 'admin'
+  body: string
+  created_at: string
+}
+
+export type AdminDirectoryUser = {
+  user_id: string
+  username: string
+  display_name: string
+  city: string | null
+  support_thread_id: string | null
 }

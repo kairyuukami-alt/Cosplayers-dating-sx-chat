@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 const links = [
   ['Discover', '/discover'],
   ['Matches', '/matches'],
+  ['Support', '/support'],
   ['Profile', '/profile'],
 ]
 
