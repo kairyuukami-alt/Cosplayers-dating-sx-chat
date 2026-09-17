@@ -5,24 +5,36 @@ import { Nav } from '@/components/nav'
 import { createClient } from '@/lib/supabase/client'
 import type { SupportMessage } from '@/lib/types'
 
+async function fetchSupportThread() {
+  const supabase = createClient()
+  const { data: thread, error: threadError } = await supabase.rpc('get_my_support_thread')
+  if (threadError) throw threadError
+  const id = thread as string
+  const { data, error } = await supabase.from('support_messages').select('*').eq('thread_id', id).order('created_at', { ascending: true })
+  if (error) throw error
+  return { threadId: id, messages: (data ?? []) as SupportMessage[] }
+}
+
 export default function SupportPage() {
   const [threadId, setThreadId] = useState<string | null>(null)
   const [messages, setMessages] = useState<SupportMessage[]>([])
   const [text, setText] = useState('')
   const [status, setStatus] = useState('')
 
-  async function load() {
-    const supabase = createClient()
-    const { data: thread, error: threadError } = await supabase.rpc('get_my_support_thread')
-    if (threadError) return setStatus(threadError.message)
-    const id = thread as string
-    setThreadId(id)
-    const { data, error } = await supabase.from('support_messages').select('*').eq('thread_id', id).order('created_at', { ascending: true })
-    if (error) return setStatus(error.message)
-    setMessages((data ?? []) as SupportMessage[])
-  }
-
-  useEffect(() => { void load() }, [])
+  useEffect(() => {
+    let cancelled = false
+    fetchSupportThread()
+      .then(result => {
+        if (cancelled) return
+        setThreadId(result.threadId)
+        setMessages(result.messages)
+      })
+      .catch(error => {
+        if (cancelled) return
+        setStatus(error instanceof Error ? error.message : 'Could not load support.')
+      })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     if (!threadId) return
